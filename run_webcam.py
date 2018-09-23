@@ -1,9 +1,13 @@
+# © 2018, modified to send the detect body parts over OSC
+# Mosalam Ebrahimi and Lilac Atassi
+
 import argparse
 import logging
 import time
 
 import cv2
-import numpy as np
+
+from pythonosc import udp_client
 
 from tf_pose.estimator import TfPoseEstimator
 from tf_pose.networks import get_graph_path, model_wh
@@ -19,6 +23,12 @@ logger.addHandler(ch)
 fps_time = 0
 
 
+def send_message(name, number):
+    if number in humans[0].body_parts.keys():
+        body_part = humans[0].body_parts[number]
+        client.send_message(name, [body_part.x, body_part.y])
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='tf-pose-estimation realtime webcam')
     parser.add_argument('--camera', type=int, default=0)
@@ -31,6 +41,12 @@ if __name__ == '__main__':
     parser.add_argument('--model', type=str, default='mobilenet_thin', help='cmu / mobilenet_thin')
     parser.add_argument('--show-process', type=bool, default=False,
                         help='for debug purpose, if enabled, speed for inference is dropped.')
+
+    parser.add_argument('--ip', type=str, default='127.0.0.1',
+                        help='the ip address of the OSC server. default=127.0.0.1')
+    parser.add_argument('--port', type=int, default=57120,
+                        help='the port number of the OSC server. default=57120 supercollider')
+
     args = parser.parse_args()
 
     logger.debug('initialization %s : %s' % (args.model, get_graph_path(args.model)))
@@ -44,16 +60,20 @@ if __name__ == '__main__':
     ret_val, image = cam.read()
     logger.info('cam image=%dx%d' % (image.shape[1], image.shape[0]))
 
+    client = udp_client.SimpleUDPClient(args.ip, args.port)
+
+    fourcc = cv2.VideoWriter_fourcc(*'XVID')
+    out = cv2.VideoWriter(str(time.time())+'.avi', fourcc, 20.0, (image.shape[1], image.shape[0]))
+
     while True:
         ret_val, image = cam.read()
 
-        logger.debug('image process+')
+        # out.write(image)
+
         humans = e.inference(image, resize_to_default=(w > 0 and h > 0), upsample_size=args.resize_out_ratio)
 
-        logger.debug('postprocess+')
         image = TfPoseEstimator.draw_humans(image, humans, imgcopy=False)
 
-        logger.debug('show+')
         cv2.putText(image,
                     "FPS: %f" % (1.0 / (time.time() - fps_time)),
                     (10, 10),  cv2.FONT_HERSHEY_SIMPLEX, 0.5,
@@ -62,6 +82,16 @@ if __name__ == '__main__':
         fps_time = time.time()
         if cv2.waitKey(1) == 27:
             break
-        logger.debug('finished+')
 
+        if len(humans) > 0:
+            body_parts = [("/right_wrist", 4), ("/left_wrist", 7),
+                          ("/right_elbow", 3), ("/left_elbow", 6),
+                          ("/right_shoulder", 2), ("/left_shoulder", 5),
+                          ("/right_knee", 9), ("/left_knee", 12),
+                          ("/right_ankle", 10), ("/left_ankle", 13),
+                          ("/right_hip", 8), ("/left_hip", 11)]
+            for body_part in body_parts:
+                send_message(body_part[0], body_part[1])
+
+    out.release()
     cv2.destroyAllWindows()
